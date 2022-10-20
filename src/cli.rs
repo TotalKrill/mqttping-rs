@@ -2,7 +2,7 @@ use clap::{Parser, ValueHint};
 use url::Url;
 
 #[derive(Parser)]
-pub(crate) struct CliOpt {
+pub struct CliOpt {
     /// URL which represents how to connect to the MQTT broker.
     ///
     /// Examples:
@@ -27,6 +27,10 @@ pub(crate) struct CliOpt {
     /// Amount of pings to send
     #[arg(long, short, default_value = "10")]
     pub pings: usize,
+
+    /// Amount of tests to run, mainly useful to get better cold path information
+    #[arg(long, short, default_value = "10")]
+    pub rounds: usize,
 
     /// Time to wait between pings
     #[arg(long, short, default_value = "10")]

@@ -11,6 +11,8 @@ use clap::Parser;
 
 use rumqttc::{AsyncClient as Client, Event, MqttOptions, Packet, QoS, Transport};
 
+use crate::cli::CliOpt;
+
 mod encryption;
 
 async fn connect_and_wait_until_reception(
@@ -34,9 +36,16 @@ async fn connect_and_wait_until_reception(
 
     tokio::task::spawn(async move {
         loop {
-            let notif = eventloop.poll().await.map_err(|_e| ()).unwrap();
-            if let Event::Incoming(Packet::Publish(_publish)) = notif {
-                tx.send(Instant::now()).await.ok();
+            match eventloop.poll().await {
+                Ok(notif) => {
+                    if let Event::Incoming(Packet::Publish(_publish)) = notif {
+                        tx.send(Instant::now()).await.ok();
+                    }
+                }
+                Err(e) => {
+                    log::debug!("Ping reciever exited: {e}");
+                    return;
+                }
             }
         }
     });
@@ -51,6 +60,24 @@ async fn connect_sender(options: MqttOptions) -> Client {
 }
 
 fn mean(data: &VecDeque<Duration>) -> Option<Duration> {
+    let sum = data.iter().sum::<Duration>().as_micros() as f64;
+    let count = data.len();
+
+    match count {
+        positive if positive > 0 => Some(Duration::from_micros((sum / count as f64) as u64)),
+        _ => None,
+    }
+}
+fn median(data: &VecDeque<Duration>) -> Option<Duration> {
+    let mut data = data.iter().map(|v| *v).collect::<Vec<Duration>>();
+    data.sort();
+    let mut data: VecDeque<Duration> = data.into();
+
+    while data.len() >= 3 {
+        data.pop_back();
+        data.pop_front();
+    }
+
     let sum = data.iter().sum::<Duration>().as_micros() as f64;
     let count = data.len();
 
@@ -78,6 +105,28 @@ fn mean(data: &VecDeque<Duration>) -> Option<Duration> {
 //         _ => None,
 //     }
 // }
+
+pub struct PingOutput {
+    pub cold_path: Duration,
+    pub max: Duration,
+    pub min: Duration,
+    pub mean: Duration,
+    pub median: Duration,
+}
+
+impl std::fmt::Display for PingOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:>6} {:>6} {:>6} {:>6} {:>6}",
+            self.cold_path.as_millis(),
+            self.mean.as_millis(),
+            self.median.as_millis(),
+            self.max.as_millis(),
+            self.min.as_millis(),
+        )
+    }
+}
 
 mod cli;
 
@@ -123,13 +172,7 @@ fn get_mqtt_options(matches: &cli::CliOpt) -> (MqttOptions, MqttOptions) {
     let mqttopt_pub = mqttoptions;
     (mqttopt_pub, mqttopt_sub)
 }
-
-#[tokio::main]
-pub async fn main() {
-    let matches = cli::CliOpt::parse();
-
-    let topic = "mqtt-ping/ping";
-
+pub async fn measure_ping(matches: &CliOpt, topic: &str) -> PingOutput {
     let (mqttopt_pub, mqttopt_sub) = get_mqtt_options(&matches);
 
     let mut rx = connect_and_wait_until_reception(topic, mqttopt_sub)
@@ -158,33 +201,117 @@ pub async fn main() {
         let received = rx.recv().await.unwrap();
         let latency = received - now;
         latencies.push(latency);
-        let latency = latency.as_micros() as f64 / 1000.0;
-        println!("{i}: {latency}");
+        // let latency = latency.as_micros() as f64 / 1000.0;
+        // println!("{i}: {latency}");
         time::sleep(Duration::from_millis(matches.wait_between as _)).await;
     }
 
     let mut latencies: VecDeque<Duration> = latencies.into();
 
     if latencies.is_empty() {
-        println!("Got no round trip values");
-        return;
+        // println!("Got no round trip values");
+        return PingOutput {
+            cold_path: Duration::ZERO,
+            max: Duration::ZERO,
+            min: Duration::ZERO,
+            mean: Duration::ZERO,
+            median: Duration::ZERO,
+        };
     }
 
-    let first = latencies.pop_front().unwrap().as_micros() as f64 / 1000.0;
+    let first = latencies.pop_front().unwrap();
     if latencies.is_empty() {
-        let max = f64::NAN;
-        let min = f64::NAN;
-        let mean = f64::NAN;
-        println!("Cold Path,\tMax,\tMin,\tMean");
-        println!("{first},\t\t{max},\t{min},\t{mean}");
-        return;
+        let max = Duration::ZERO;
+        let min = Duration::ZERO;
+        let mean = Duration::ZERO;
+        let median = Duration::ZERO;
+
+        return PingOutput {
+            cold_path: first,
+            max,
+            min,
+            mean,
+            median,
+        };
     }
-    let max = latencies.iter().max().unwrap();
-    let max = max.as_micros() as f64 / 1000.0;
-    let min = latencies.iter().min().unwrap();
-    let min = min.as_micros() as f64 / 1000.0;
-    let mean = mean(&latencies).unwrap().as_micros() as f64 / 1000.0;
-    // let stddev = latencies.iter().stddev();
-    println!("Cold Path,\tMax,\tMin,\tMean");
-    println!("{first},\t\t{max},\t{min},\t{mean}");
+    let max = latencies.iter().max().unwrap().clone();
+    let min = latencies.iter().min().unwrap().clone();
+    let mean = mean(&latencies).unwrap();
+    let median = median(&latencies).unwrap();
+
+    PingOutput {
+        cold_path: first,
+        max,
+        min,
+        mean,
+        median,
+    }
+}
+
+#[tokio::main]
+pub async fn main() {
+    let matches = crate::CliOpt::parse();
+
+    let topic = "mqtt-ping/ping";
+
+    let mut outputs = Vec::new();
+
+    println!(
+        "run: {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "cold", "mean", "median", "max", "min"
+    );
+    for i in 0..matches.rounds {
+        let output = measure_ping(&matches, topic).await;
+        println!("{i:>3}: {output}");
+        outputs.push(output);
+    }
+
+    let cold_path: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.cold_path)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+
+    let mean_value: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.mean)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+
+    let median: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.median)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+    let max: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.max)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+    let min: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.min)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+
+    let output = PingOutput {
+        cold_path,
+        mean: mean_value,
+        median,
+        max,
+        min,
+    };
+
+    println!("{:=<39}", "");
+    println!("avg: {output}");
 }

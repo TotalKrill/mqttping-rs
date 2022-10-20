@@ -12,6 +12,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.65"
 clap = { version = "4.0.17", features = ["derive", "env"] }
+log = "0.4.17"
 rand = "0.8.5"
 rumqttc = { version = "0.17.0", features = ["websocket"] }
 rustls = { version = "0.20.7", features = ["dangerous_configuration"] }
