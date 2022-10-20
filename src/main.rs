@@ -1,3 +1,7 @@
+use crate::cli::CliOpt;
+use clap::Parser;
+use indicatif::ProgressStyle;
+use rumqttc::{AsyncClient as Client, Event, MqttOptions, Packet, QoS, Transport};
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -6,14 +10,87 @@ use tokio::{
     sync::mpsc::{channel, Receiver},
     time,
 };
-
-use clap::Parser;
-
-use rumqttc::{AsyncClient as Client, Event, MqttOptions, Packet, QoS, Transport};
-
-use crate::cli::CliOpt;
+mod cli;
 
 mod encryption;
+
+#[tokio::main]
+pub async fn main() {
+    let matches = crate::CliOpt::parse();
+
+    let topic = "mqtt-ping/ping";
+
+    let mut outputs = Vec::new();
+
+    println!(
+        "{}: {} rounds, {} pings",
+        matches.broker, matches.rounds, matches.pings,
+    );
+
+    println!("{:=>41}", "");
+
+    println!(
+        "run:   {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "cold", "mean", "med", "max", "min"
+    );
+    let rounds = matches.rounds;
+    for i in 1..=rounds {
+        let output = measure_ping(&matches, topic).await;
+        let counter = format!("{i:>2}/{rounds}:");
+        println!("{counter:<7}{output}");
+        outputs.push(output);
+    }
+
+    let cold_path: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.cold_path)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+
+    let mean_value: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.mean)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+
+    let median: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.median)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+    let max: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.max)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+    let min: Duration = mean(
+        &outputs
+            .iter()
+            .map(|o| o.min)
+            .collect::<VecDeque<Duration>>(),
+    )
+    .unwrap();
+
+    let output = PingOutput {
+        cold_path,
+        mean: mean_value,
+        median,
+        max,
+        min,
+    };
+
+    println!("{:=<41}", "");
+    let avgtext = format!("avg:");
+    println!("{avgtext:<7}{output}");
+}
 
 async fn connect_and_wait_until_reception(
     topic: &str,
@@ -128,8 +205,6 @@ impl std::fmt::Display for PingOutput {
     }
 }
 
-mod cli;
-
 fn get_mqtt_options(matches: &cli::CliOpt) -> (MqttOptions, MqttOptions) {
     let (transport, host, port) = match &matches.broker {
         cli::Broker::Tcp { host, port } => (Transport::Tcp, host.clone(), *port),
@@ -173,6 +248,8 @@ fn get_mqtt_options(matches: &cli::CliOpt) -> (MqttOptions, MqttOptions) {
     (mqttopt_pub, mqttopt_sub)
 }
 pub async fn measure_ping(matches: &CliOpt, topic: &str) -> PingOutput {
+    use indicatif::ProgressBar;
+
     let (mqttopt_pub, mqttopt_sub) = get_mqtt_options(&matches);
 
     let mut rx = connect_and_wait_until_reception(topic, mqttopt_sub)
@@ -192,7 +269,16 @@ pub async fn measure_ping(matches: &CliOpt, topic: &str) -> PingOutput {
 
     let mut latencies: Vec<Duration> = Vec::new();
 
+    let mut pb = ProgressBar::new(matches.pings as _);
+    // pb.set_width(39);
+    pb.set_style(
+        ProgressStyle::with_template("[{bar:40} {pos:>7}/{len:7}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+
     for i in 0..matches.pings {
+        pb.inc(1);
         let now = Instant::now();
         let stopic = format!("{topic}/{i}");
         let _e = sender
@@ -205,6 +291,7 @@ pub async fn measure_ping(matches: &CliOpt, topic: &str) -> PingOutput {
         // println!("{i}: {latency}");
         time::sleep(Duration::from_millis(matches.wait_between as _)).await;
     }
+    pb.finish_and_clear();
 
     let mut latencies: VecDeque<Duration> = latencies.into();
 
@@ -246,72 +333,4 @@ pub async fn measure_ping(matches: &CliOpt, topic: &str) -> PingOutput {
         mean,
         median,
     }
-}
-
-#[tokio::main]
-pub async fn main() {
-    let matches = crate::CliOpt::parse();
-
-    let topic = "mqtt-ping/ping";
-
-    let mut outputs = Vec::new();
-
-    println!(
-        "run: {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "cold", "mean", "median", "max", "min"
-    );
-    for i in 0..matches.rounds {
-        let output = measure_ping(&matches, topic).await;
-        println!("{i:>3}: {output}");
-        outputs.push(output);
-    }
-
-    let cold_path: Duration = mean(
-        &outputs
-            .iter()
-            .map(|o| o.cold_path)
-            .collect::<VecDeque<Duration>>(),
-    )
-    .unwrap();
-
-    let mean_value: Duration = mean(
-        &outputs
-            .iter()
-            .map(|o| o.mean)
-            .collect::<VecDeque<Duration>>(),
-    )
-    .unwrap();
-
-    let median: Duration = mean(
-        &outputs
-            .iter()
-            .map(|o| o.median)
-            .collect::<VecDeque<Duration>>(),
-    )
-    .unwrap();
-    let max: Duration = mean(
-        &outputs
-            .iter()
-            .map(|o| o.max)
-            .collect::<VecDeque<Duration>>(),
-    )
-    .unwrap();
-    let min: Duration = mean(
-        &outputs
-            .iter()
-            .map(|o| o.min)
-            .collect::<VecDeque<Duration>>(),
-    )
-    .unwrap();
-
-    let output = PingOutput {
-        cold_path,
-        mean: mean_value,
-        median,
-        max,
-        min,
-    };
-
-    println!("{:=<39}", "");
-    println!("avg: {output}");
 }

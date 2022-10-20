@@ -93,6 +93,17 @@ pub enum Broker {
     WebSocketSsl(Url),
 }
 
+impl std::fmt::Display for Broker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Broker::Tcp { host, port } => write!(f, "mqtt://{}:{}", host, port),
+            Broker::Ssl { host, port } => write!(f, "mqtts://{}:{}", host, port),
+            Broker::WebSocket(url) => write!(f, "{}", url),
+            Broker::WebSocketSsl(url) => write!(f, "{}", url),
+        }
+    }
+}
+
 impl std::str::FromStr for Broker {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
