@@ -5,7 +5,7 @@ repository = "https://github.com/TotalKrill/mqttping-rs.git"
 license = "MIT"
 readme = "README.md"
 name = "mqtt-ping"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

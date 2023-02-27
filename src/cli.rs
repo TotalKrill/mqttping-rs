@@ -83,6 +83,20 @@ pub struct CliOpt {
         global = true,
     )]
     pub password: Option<String>,
+
+    /// Topic to use for the ping sequence.
+    ///
+    /// the topic that will be used for sending and recieving the ping request from!
+    #[arg(
+        long,
+        env = "MQTTPING_TOPIC",
+        value_hint = ValueHint::Other,
+        value_name = "STRING",
+        hide_env_values = true,
+        requires = "username",
+        global = true,
+    )]
+    pub topic: Option<String>,
 }
 
 #[derive(Debug, Clone)]

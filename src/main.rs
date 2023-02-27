@@ -1,6 +1,7 @@
 use crate::cli::CliOpt;
 use clap::Parser;
 use indicatif::ProgressStyle;
+use rand::Rng;
 use rumqttc::{AsyncClient as Client, Event, MqttOptions, Packet, QoS, Transport};
 use std::{
     collections::VecDeque,
@@ -18,7 +19,9 @@ mod encryption;
 pub async fn main() {
     let matches = crate::CliOpt::parse();
 
-    let topic = "mqtt-ping/ping";
+    let id = matches.base_client_id.clone();
+
+    let topic = matches.topic.clone().unwrap_or(format!("{id}/ping"));
 
     let mut outputs = Vec::new();
 
@@ -35,7 +38,7 @@ pub async fn main() {
     );
     let rounds = matches.rounds;
     for i in 1..=rounds {
-        let output = measure_ping(&matches, topic).await;
+        let output = measure_ping(&matches, &topic).await;
         let counter = format!("{i:>2}/{rounds}:");
         println!("{counter:<7}{output}");
         outputs.push(output);
@@ -254,18 +257,19 @@ pub async fn measure_ping(matches: &CliOpt, topic: &str) -> PingOutput {
 
     let mut rx = connect_and_wait_until_reception(topic, mqttopt_sub)
         .await
-        .unwrap();
+        .expect("failed to connect");
 
     // connect sender,
     let sender = connect_sender(mqttopt_pub).await;
-    let _e = sender
-        .publish(
-            "mqtt-ping/startup",
-            QoS::AtMostOnce,
-            false,
-            matches.payload.clone(),
-        )
-        .await;
+
+    // let _e = sender
+    //     .publish(
+    //         "mqtt-ping/startup",
+    //         QoS::AtMostOnce,
+    //         false,
+    //         matches.payload.clone(),
+    //     )
+    //     .await;
 
     let mut latencies: Vec<Duration> = Vec::new();
 
@@ -281,10 +285,20 @@ pub async fn measure_ping(matches: &CliOpt, topic: &str) -> PingOutput {
         pb.inc(1);
         let now = Instant::now();
         let stopic = format!("{topic}/{i}");
-        let _e = sender
-            .publish(stopic, QoS::AtMostOnce, false, matches.payload.clone())
-            .await;
-        let received = rx.recv().await.unwrap();
+        sender
+            .publish(
+                stopic.clone(),
+                QoS::AtMostOnce,
+                false,
+                matches.payload.clone(),
+            )
+            .await
+            .expect(&format!("failed to publish on {stopic}"));
+
+        let received = rx
+            .recv()
+            .await
+            .expect(&format!("reception of {stopic} package failed"));
         let latency = received - now;
         latencies.push(latency);
         // let latency = latency.as_micros() as f64 / 1000.0;
